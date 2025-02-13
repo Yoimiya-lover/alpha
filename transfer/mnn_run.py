@@ -1,67 +1,84 @@
-import MNN
-import numpy as np
 import cv2
-import torch
+import numpy as np
+import MNN
 
-def read_img_mnn(fg_path, bg_path, alpha_path):
-    """ 读取图像并转换为 MNN 需要的格式 """
-    fg = cv2.imread(fg_path).astype(np.float32) / 255.0
-    bg = cv2.imread(bg_path).astype(np.float32) / 255.0
-    alpha = cv2.imread(alpha_path, cv2.IMREAD_GRAYSCALE).astype(np.float32)
+def load_and_preprocess(image_path, target_size):
+    """ 读取、调整大小、归一化并转换为 NCHW 格式 """
+    img = cv2.imread(image_path, cv2.IMREAD_UNCHANGED)  # 读取图像
+    img = cv2.resize(img, (target_size, target_size))  # 调整大小
+    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0  # 归一化
 
-    # 调整大小
-    fg = cv2.resize(fg, (1024, 1024))
-    bg = cv2.resize(bg, (1024, 1024))
-    alpha = cv2.resize(alpha, (1024, 1024))
+    # HWC -> CHW
+    img = np.transpose(img, (2, 0, 1))
+    img = np.expand_dims(img, axis=0)  # 增加 Batch 维度
+    
+    print(f"Loaded image {image_path} with shape: {img.shape}")
+    return img
 
-    # 变换维度 (H, W, C) -> (1, C, H, W)
-    fg = np.transpose(fg, (2, 0, 1))[None, :, :, :]
-    bg = np.transpose(bg, (2, 0, 1))[None, :, :, :]
-    alpha = alpha[None, None, :, :]  # 增加批次和通道维度
+def numpy_to_mnn_tensor(numpy_data, tensor):
+    """ 修正后的 NumPy -> MNN Tensor 转换 """
+    numpy_data = numpy_data.astype(np.float32)  # 确保是 float32
+    tensor_shape = tensor.getShape()  # ✅ 使用 getShape()
+    
+    print(f"Expecting shape: {tensor_shape}, but got: {numpy_data.shape}")  # Debug
+    
+    if list(numpy_data.shape) != tensor_shape:
+        numpy_data = numpy_data.reshape(tensor_shape)  # 调整形状
+    
+    mnn_tensor = MNN.Tensor(tensor_shape, MNN.Halide_Type_Float, numpy_data, MNN.Tensor_DimensionType_Caffe)
+    tensor.copyFrom(mnn_tensor)
 
-    return fg, bg, alpha
+def run_inference(model_path, fg_path, bg_path, alpha_path, input_size):
+    """ 运行模型推理 """
+    # 加载 MNN 模型
+    interpreter = MNN.Interpreter(model_path)
+    session = interpreter.createSession()
 
-# 加载 MNN 模型
-interpreter = MNN.Interpreter("alpha_blend.mnn")
-session = interpreter.createSession()
-input_fg = interpreter.getSessionInput(session, "fg")
-input_bg = interpreter.getSessionInput(session, "bg")
-input_alpha = interpreter.getSessionInput(session, "alpha")
+    # 读取图像
+    fg = load_and_preprocess(fg_path, input_size)
+    bg = load_and_preprocess(bg_path, input_size)
+    alpha = load_and_preprocess(alpha_path, input_size)
 
-# 读取图片
-fg, bg, alpha = read_img_mnn("fg.jpg", "bg.jpg", "alpha.jpg")
-print("读取成功，开始推理")
-print("把 numpy 转换成 MNN Tensor")
-# 把 numpy 转换成 MNN Tensor
-fg_tensor = MNN.Tensor((1, 3, 1024, 1024), MNN.Halide_Type_Float, fg, MNN.Tensor_DimensionType_Caffe)
-bg_tensor = MNN.Tensor((1, 3, 1024, 1024), MNN.Halide_Type_Float, bg, MNN.Tensor_DimensionType_Caffe)
-alpha_tensor = MNN.Tensor((1, 1, 1024, 1024), MNN.Halide_Type_Float, alpha, MNN.Tensor_DimensionType_Caffe)
-print("转换成功")
+    # 处理 Alpha（检查是否单通道）
+    print(f"Alpha shape before: {alpha.shape}")
+    if alpha.shape[1] != 1:  
+        alpha = np.mean(alpha, axis=1, keepdims=True)  # 转换为单通道
+    print(f"Alpha shape after: {alpha.shape}")
 
-print("开始把数据传入 MNN")
+    # 获取输入张量（检查输入名称）
+    inputs = interpreter.getSessionInputAll(session)
+    print("模型输入名称:", inputs.keys())  # 打印输入名称
+    
+    if "fg" not in inputs or "bg" not in inputs or "alpha" not in inputs:
+        raise ValueError("模型输入名称不匹配，请检查 MNN 模型的输入名称！")
+    
+    input_fg = inputs["fg"]
+    input_bg = inputs["bg"]
+    input_alpha = inputs["alpha"]
 
-print("fg input shape:", fg_tensor.getShape())  # 打印 MNN 输入形状
-print("bg input shape:", bg_tensor.getShape())
-print("alpha input shape:", alpha_tensor.getShape())
-print(fg.dtype, bg.dtype, alpha.dtype)  # 确保它们都是 float32
+    print("开始复制数据")
+    # 复制数据
+    numpy_to_mnn_tensor(fg, input_fg)
+    numpy_to_mnn_tensor(bg, input_bg)
+    numpy_to_mnn_tensor(alpha, input_alpha)
 
+    # 运行模型
+    interpreter.runSession(session)
 
-# 把数据传入 MNN
-input_fg.copyFrom(fg_tensor)
-input_bg.copyFrom(bg_tensor)
-input_alpha.copyFrom(alpha_tensor)
-print("数据传入成功")
-# 运行推理
-interpreter.runSession(session)
+    # 获取输出
+    output_tensor = interpreter.getSessionOutput(session)
+    output_data = np.array(output_tensor.getData())
 
-# 获取输出
-output_tensor = interpreter.getSessionOutput(session, "output")
-output_np = np.array(output_tensor.getData(), dtype=np.float32).reshape(1, 3, 1024, 1024)
+    print("推理结果:", output_data.shape)
+    return output_data
 
-# 变换维度回 (H, W, C)
-output_np = np.transpose(output_np[0], (1, 2, 0)) * 255
-output_np = np.clip(output_np, 0, 255).astype(np.uint8)
+if __name__ == "__main__":
+    # 设定输入尺寸
+    INPUT_SIZE = 1024
 
-# 保存 MNN 推理结果
-cv2.imwrite("mnn_output.jpg", output_np)
-print("MNN 推理完成，结果已保存到 mnn_output.jpg")
+    # 运行推理
+    output_data = run_inference("alpha_blend.mnn", "fg.jpg", "bg.jpg", "alpha.jpg", INPUT_SIZE)
+
+    # 进一步处理输出结果，例如保存图像
+    output_image = (output_data.squeeze().transpose(1, 2, 0) * 255).astype(np.uint8)
+    cv2.imwrite("output.jpg", cv2.cvtColor(output_image, cv2.COLOR_RGB2BGR))
