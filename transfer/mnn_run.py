@@ -80,5 +80,10 @@ if __name__ == "__main__":
     output_data = run_inference("alpha_blend.mnn", "fg.jpg", "bg.jpg", "alpha.jpg", INPUT_SIZE)
 
     # 进一步处理输出结果，例如保存图像
-    output_image = (output_data.squeeze().transpose(1, 2, 0) * 255).astype(np.uint8)
+    output_data = (output_data * 255).astype(np.uint8)
+
+    reshaped_data = output_data.reshape(3, 1024, 1024)  # 重新调整输出的形状
+    output_image = reshaped_data.transpose(1, 2, 0)  # 转换为 HWC 格式
+
+    # 保存输出图像
     cv2.imwrite("output.jpg", cv2.cvtColor(output_image, cv2.COLOR_RGB2BGR))

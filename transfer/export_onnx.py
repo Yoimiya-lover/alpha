@@ -10,9 +10,10 @@ model = AlphaBlendNet()
 #切换到推理模式（去掉dropout，BN，训练模式
 model.eval()
 
-dummy_fg = torch.randn(1024,1024)
-dummy_bg = torch.randn(1024,1024)
+dummy_fg = torch.randn(1,3,1024,1024)
+dummy_bg = torch.randn(1,3,1024,1024)
 dummy_alpha = torch.randn(1,1024,1024)
+print("fg:shape:",dummy_fg.shape)
 
 #导出onnx
 torch.onnx.export(model,

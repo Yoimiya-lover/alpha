@@ -40,6 +40,7 @@ def read_img(fg_path,bg_path,alpha_path):
     fg = cv2.resize(fg,(1024,1024))
     bg = cv2.resize(bg,(1024,1024))
     alpha = cv2.resize(alpha, (1024, 1024))  # 确保 alpha 与 fg/bg 大
+    print("图像大小:", fg.shape, bg.shape, alpha.shape)
 
     #转化为PyTorch Tensor
     fg = torch.from_numpy(fg).permute(2,0,1).unsqueeze(0)
